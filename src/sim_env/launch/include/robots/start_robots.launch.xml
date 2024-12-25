@@ -3,7 +3,7 @@
 	<arg name="agent_number" default="1" />
 	<arg name="agent_id" default="1" />
 	<arg name="robot1_type" value="turtlebot3_waffle" />
-	<arg name="robot1_global_planner" value="a_star" />
+	<arg name="robot1_global_planner" value="rrt" />
 	<arg name="robot1_local_planner" value="lqr" />
 	<arg name="robot1_x_pos" value="0.0" />
 	<arg name="robot1_y_pos" value="0.0" />
@@ -14,8 +14,7 @@
 		<arg name="agent_id" value="$(arg agent_id)" />
 		<arg name="robot" value="$(eval arg('robot' + str(arg('agent_id')) + '_type'))" />
 		<arg name="global_planner" value="$(eval arg('robot' + str(arg('agent_id')) + '_global_planner'))" />
-		<!-- <arg name="local_planner" value="$(eval arg('robot' + str(arg('agent_id')) + '_local_planner'))" /> -->
-		<arg name="local_planner" value="mpc" />
+		<arg name="local_planner" value="$(eval arg('robot' + str(arg('agent_id')) + '_local_planner'))" />
 		<arg name="robot_namespace" value="robot$(arg agent_id)" />
 		<arg name="start_ns" value="false" />
 		<arg name="robot_x" value="$(eval arg('robot' + str(arg('agent_id')) + '_x_pos'))" />
