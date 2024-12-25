@@ -293,8 +293,8 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
 
   // original state matrix
   Eigen::Matrix3d A_o = Eigen::Matrix3d::Identity();
-  A_o(0, 2) = -u_r[0] * sin(s_d[2]) * d_t_;
-  A_o(1, 2) = u_r[0] * cos(s_d[2]) * d_t_;
+  // A_o(0, 2) = -u_r[0] * sin(s_d[2]) * d_t_;
+  // A_o(1, 2) = u_r[0] * cos(s_d[2]) * d_t_;
 
   // 慣性を考慮した項を追加
   //A_o(2, 2) -= inertia_coefficient_ * d_t_;  
@@ -480,12 +480,12 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
   // current_state.head(s.size()) = s;           // 現在の位置と向き
   // current_state.tail(du_p.size()) = du_p;     // 前回の制御入力誤差
   double x_pre = 0, y_pre = 0, th_pre=0;
-  ROS_INFO_STREAM("solution length: " << work->data->n);
+  //ROS_INFO_STREAM("solution length: " << work->data->n);
   for (int i = 0; i < (work->data->n / 2); i++) {
-      ROS_INFO_STREAM("solution " << i << ": " << 
-      (double)work->solution->x[i*2] + du_p[0] + u_r[0]
-      << ", " << 
-      (double)work->solution->x[i*2+1] + du_p[1] + u_r[1]);
+      // ROS_INFO_STREAM("solution " << i << ": " << 
+      // (double)work->solution->x[i*2] + du_p[0] + u_r[0]
+      // << ", " << 
+      // (double)work->solution->x[i*2+1] + du_p[1] + u_r[1]);
 
       // 状態遷移計算
       current_state = current_state + B * Eigen::VectorXd::Map(&work->solution->x[i * 2], 2);
