@@ -18,6 +18,8 @@
 #define RMP_CONTROLLER_MPC_CONTROLLER_H_
 
 #include <geometry_msgs/PointStamped.h>
+#include <tf/transform_datatypes.h>
+#include <nav_msgs/Path.h>
 #include <tf2/utils.h>
 
 #include <Eigen/Dense>
@@ -100,7 +102,16 @@ private:
   int m_;                 // control time domain
   Eigen::Vector2d du_p_;  // previous control error
 
-  ros::Publisher target_pt_pub_, current_pose_pub_;
+  // double response_delay_factor_; //foctor for d_t_
+  // double inertia_coefficient_;
+  double delay_time_v_, delay_time_w_;
+  double min_r_;
+
+  int max_iter_;
+  bool warm_start_, adaptive_rho_, scaled_termination_;
+  double eps_abs_, eps_rel_;
+
+  ros::Publisher target_pt_pub_, current_pose_pub_, trajectory_pub_;
 
   // goal parameters
   double goal_x_, goal_y_, goal_theta_;

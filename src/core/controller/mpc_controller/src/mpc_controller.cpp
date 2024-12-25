@@ -66,6 +66,14 @@ void MPCController::initialize(std::string name, tf2_ros::Buffer* tf, costmap_2d
 
     ros::NodeHandle nh = ros::NodeHandle("~/" + name);
 
+    //optimization params
+    nh.param("max_iter", max_iter_, 100); //max iteration
+    nh.param("warm_start", warm_start_, true); //if true,  previous results are used for initial value of  the next optimization
+    nh.param("adaptive_rho", adaptive_rho_, true); 
+    nh.param("scaled_termination", scaled_termination_, true); 
+    nh.param("eps_abs", eps_abs_, 1e-4); 
+    nh.param("eps_rel", eps_rel_, 1e-4); 
+
     // base
     nh.param("goal_dist_tolerance", goal_dist_tol_, 0.2);
     nh.param("rotate_tolerance", rotate_tol_, 0.5);
@@ -91,6 +99,12 @@ void MPCController::initialize(std::string name, tf2_ros::Buffer* tf, costmap_2d
     nh.param("predicting_time_domain", p_, 4);
     nh.param("control_time_domain", m_, 4);
 
+    // nh.param("response_delay_factor", response_delay_factor_, 1.0);
+    // nh.param("inertia_coefficient", inertia_coefficient_, 0.0);
+    nh.param("delay_time_v", delay_time_v_, 0.0);
+    nh.param("delay_time_w", delay_time_w_, 0.0);
+    nh.param("min_r", min_r_, 0.0);
+
     // weight matrix for penalizing state error while tracking [x,y,theta]
     std::vector<double> diag_vec;
     Q_ = Eigen::Matrix3d::Zero();
@@ -110,6 +124,7 @@ void MPCController::initialize(std::string name, tf2_ros::Buffer* tf, costmap_2d
 
     target_pt_pub_ = nh.advertise<geometry_msgs::PointStamped>("/target_point", 10);
     current_pose_pub_ = nh.advertise<geometry_msgs::PoseStamped>("/current_pose", 10);
+    trajectory_pub_ = nh.advertise<nav_msgs::Path>("/predicted_trajectory", 10);
 
     ROS_INFO("MPC Controller initialized!");
   }
@@ -194,6 +209,9 @@ bool MPCController::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
 
   // transform global plan to robot frame
   std::vector<geometry_msgs::PoseStamped> prune_plan = prune(robot_pose_map);
+  for(auto& pose : prune_plan){
+    tf_->transform(pose,pose,map_frame_);
+  }
 
   // calculate look-ahead distance
   double vt = std::hypot(base_odom.twist.twist.linear.x, base_odom.twist.twist.linear.y);
@@ -244,7 +262,12 @@ bool MPCController::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
 
   // publish robot pose
   current_pose_pub_.publish(robot_pose_map);
-
+  if(cmd_vel.angular.z != 0.0){
+    double r = std::fabs(cmd_vel.linear.x / cmd_vel.angular.z);
+    if(r < min_r_){
+      cmd_vel.angular.z = (cmd_vel.angular.z >= 0.0 ? 1.0 : -1.0) * std::fabs(cmd_vel.linear.x / min_r_);
+    }
+  }
   return true;
 }
 
@@ -273,11 +296,16 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
   A_o(0, 2) = -u_r[0] * sin(s_d[2]) * d_t_;
   A_o(1, 2) = u_r[0] * cos(s_d[2]) * d_t_;
 
+  // 慣性を考慮した項を追加
+  //A_o(2, 2) -= inertia_coefficient_ * d_t_;  
+
   // original control matrix
   Eigen::MatrixXd B_o = Eigen::MatrixXd::Zero(dim_x, dim_u);
   B_o(0, 0) = cos(s_d[2]) * d_t_;
   B_o(1, 0) = sin(s_d[2]) * d_t_;
   B_o(2, 1) = d_t_;
+  // 応答遅れを考慮
+  //B_o(2, 1) *= response_delay_factor_; 
 
   // state matrix (5 x 5)
   Eigen::MatrixXd A = Eigen::MatrixXd::Zero(dim_x + dim_u, dim_x + dim_u);
@@ -285,11 +313,15 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
   A.topRightCorner(dim_x, dim_u) = B_o;
   A.bottomLeftCorner(dim_u, dim_x) = Eigen::MatrixXd::Zero(dim_u, dim_x);
   A.bottomRightCorner(dim_u, dim_u) = Eigen::Matrix2d::Identity();
+  //A(3,3) = 1.0 - d_t_ / delay_time_v_;
+  //A(4,4) = 1.0 - d_t_ / delay_time_w_;
 
   // control matrix (5 x 2)
   Eigen::MatrixXd B = Eigen::MatrixXd::Zero(dim_x + dim_u, dim_u);
-  B.topLeftCorner(dim_x, dim_u) = B_o;
+  //B.topLeftCorner(dim_x, dim_u) = B_o;
   B.bottomLeftCorner(dim_u, dim_u) = Eigen::Matrix2d::Identity();
+  //B(3,0) = d_t_ / delay_time_v_;
+  //B(4,1) = d_t_ / delay_time_w_;
 
   // output matrix(3 x 5)
   Eigen::MatrixXd C = Eigen::MatrixXd::Zero(dim_x, dim_x + dim_u);
@@ -328,8 +360,8 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
   Eigen::Vector2d u_min(min_v_, -max_w_);
   Eigen::Vector2d u_max(max_v_, max_w_);
   Eigen::Vector2d u_k_1(du_p[0], du_p[1]);
-  Eigen::Vector2d du_min(-0.2, -0.2);
-  Eigen::Vector2d du_max(0.2, M_PI);
+  Eigen::Vector2d du_min(-max_v_inc_, -max_w_inc_);
+  Eigen::Vector2d du_max(max_v_inc_, max_w_inc_);
   Eigen::VectorXd U_min = Eigen::kroneckerProduct(Eigen::VectorXd::Ones(m_), u_min);    // (2m x 1)
   Eigen::VectorXd U_max = Eigen::kroneckerProduct(Eigen::VectorXd::Ones(m_), u_max);    // (2m x 1)
   Eigen::VectorXd U_r = Eigen::kroneckerProduct(Eigen::VectorXd::Ones(m_), u_r);        // (2m x 1)
@@ -408,7 +440,12 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
   OSQPSettings* settings = reinterpret_cast<OSQPSettings*>(c_malloc(sizeof(OSQPSettings)));
   osqp_set_default_settings(settings);
   settings->verbose = false;
-  settings->warm_start = true;
+  settings->max_iter = max_iter_;
+  settings->warm_start = warm_start_;
+  settings->adaptive_rho =  adaptive_rho_;
+  settings->scaled_termination = scaled_termination_;
+  settings->eps_abs = eps_abs_; 
+  settings->eps_rel = eps_rel_;
 
   data->n = dim_u * m_;
   data->m = 2 * dim_u * m_;
@@ -434,7 +471,49 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
     return Eigen::Vector2d::Zero();
   }
 
+  nav_msgs::Path predicted_path;
+  predicted_path.header.stamp = ros::Time::now();
+  predicted_path.header.frame_id = map_frame_;
+
+  // 予想軌跡描画:初期状態を現在のロボットの状態（引数 s）に設定
+  Eigen::VectorXd current_state = Eigen::VectorXd::Zero(s.size() + du_p.size());
+  // current_state.head(s.size()) = s;           // 現在の位置と向き
+  // current_state.tail(du_p.size()) = du_p;     // 前回の制御入力誤差
+  double x_pre = 0, y_pre = 0, th_pre=0;
+  ROS_INFO_STREAM("solution length: " << work->data->n);
+  for (int i = 0; i < (work->data->n / 2); i++) {
+      ROS_INFO_STREAM("solution " << i << ": " << 
+      (double)work->solution->x[i*2] + du_p[0] + u_r[0]
+      << ", " << 
+      (double)work->solution->x[i*2+1] + du_p[1] + u_r[1]);
+
+      // 状態遷移計算
+      current_state = current_state + B * Eigen::VectorXd::Map(&work->solution->x[i * 2], 2);
+      x_pre += (work->solution->x[i * 2] + du_p[0] + u_r[0]) * cos(th_pre) * d_t_;
+      y_pre += (work->solution->x[i * 2] + du_p[0] + u_r[0]) * sin(th_pre) * d_t_;
+      th_pre += (work->solution->x[i * 2 + 1] + du_p[1] + u_r[1]) * d_t_; 
+      geometry_msgs::PoseStamped pose;
+      pose.header.frame_id = base_frame_;
+      pose.pose.position.x = x_pre;//current_state(0);  // x position
+      pose.pose.position.y = y_pre;//current_state(1);  // y position
+      pose.pose.orientation = tf::createQuaternionMsgFromYaw(th_pre/*current_state(2)*/);  // orientation (theta)
+      tf_->transform(pose,pose,map_frame_);
+
+      predicted_path.poses.push_back(pose);
+  }
+
+  // Publish the predicted trajectory
+  trajectory_pub_.publish(predicted_path);
+
   Eigen::Vector2d u(work->solution->x[0] + du_p[0] + u_r[0], regularizeAngle(work->solution->x[1] + du_p[1] + u_r[1]));
+  //Eigen::Vector2d u(work->solution->x[0], work->solution->x[1]);
+
+  // double w_ref = 0.0;
+  // int num_mean_w = work->data->n/2;
+  // for(int i = 0;i<num_mean_w;i++){
+  //   w_ref += work->solution->x[2 * i +1] / (double)num_mean_w;
+  // }
+  // Eigen::Vector2d u(work->solution->x[0] + du_p[0] + u_r[0], w_ref);
 
   // Cleanup
   osqp_cleanup(work);

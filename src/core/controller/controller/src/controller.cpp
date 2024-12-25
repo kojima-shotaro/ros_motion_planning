@@ -300,9 +300,12 @@ void Controller::getLookAheadPoint(double lookahead_dist, geometry_msgs::PoseSta
 
   // Find the first pose which is at a distance greater than the lookahead distance
   auto goal_pose_it = std::find_if(prune_plan.begin(), prune_plan.end(), [&](const geometry_msgs::PoseStamped& ps) {
+    // ROS_INFO_STREAM("track_point: " << ps);
+    // ROS_INFO_STREAM("robot_pose: " << robot_pose_global);
     return std::hypot(ps.pose.position.x - robot_pose_global.pose.position.x,
                       ps.pose.position.y - robot_pose_global.pose.position.y) >= lookahead_dist;
   });
+  
 
   // If the no pose is not far enough, take the last pose
   if (goal_pose_it == prune_plan.end())
@@ -372,7 +375,7 @@ void Controller::getLookAheadPoint(double lookahead_dist, geometry_msgs::PoseSta
 
   if (std::isnan(kappa))
     kappa = 0.0;
-  pt.header.frame_id = goal_pose_it->header.frame_id;
+  pt.header.frame_id = map_frame_;//goal_pose_it->header.frame_id;
   pt.header.stamp = goal_pose_it->header.stamp;
 }
 
