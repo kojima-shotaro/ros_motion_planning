@@ -208,15 +208,27 @@ bool MPCController::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
   transformPose(tf_, map_frame_, robot_pose_odom, robot_pose_map);
 
   // transform global plan to robot frame
-  std::vector<geometry_msgs::PoseStamped> prune_plan = prune(robot_pose_map);
+  //std::vector<geometry_msgs::PoseStamped> prune_plan = prune(robot_pose_map);
+  std::vector<geometry_msgs::PoseStamped> prune_plan = global_plan_;
+  ROS_INFO_STREAM("aaaaa");
+  int index_current = get_nearest_index(prune_plan, robot_pose_map);
+  ROS_INFO_STREAM("a1");
   for(auto& pose : prune_plan){
     tf_->transform(pose,pose,map_frame_);
   }
-
-  // calculate look-ahead distance
-  double vt = std::hypot(base_odom.twist.twist.linear.x, base_odom.twist.twist.linear.y);
+  //calc target trajectory considering robot speed and distanece
+  int index_end = prune_plan.size();
+  if(index_end > p_ + index_current){
+    index_end = p_ + index_current;
+  }
+  ROS_INFO_STREAM("bbbbb");
+  reap_path(prune_plan, index_current, index_end);
+  ROS_INFO_STREAM("ccccc");
+  double vt = std::hypot(base_odom.twist.twist.linear.x, base_odom.twist.twist.linear.y);    // calculate look-ahead distance
   double wt = base_odom.twist.twist.angular.z;
   double L = getLookAheadDistance(vt);
+  downsample_path(prune_plan, d_t_ * std::min(std::fabs(vt),std::fabs(min_v_)));
+  ROS_INFO_STREAM("ddddd");
 
   // get the particular point on the path at the lookahead distance
   geometry_msgs::PointStamped lookahead_pt;
@@ -249,7 +261,13 @@ bool MPCController::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
     Eigen::Vector3d s(robot_pose_map.pose.position.x, robot_pose_map.pose.position.y, theta);  // current state
     Eigen::Vector3d s_d(lookahead_pt.point.x, lookahead_pt.point.y, theta_trj);                // desired state
     Eigen::Vector2d u_r(vt, regularizeAngle(vt * kappa));                                      // refered input
-    Eigen::Vector2d u = _mpcControl(s, s_d, u_r, du_p_);
+    std::vector<Eigen::Vector3d> target_path;
+    for(auto pose: prune_plan){
+      double theta_path = tf2::getYaw(pose.pose.orientation);
+      Eigen::Vector3d s_path(pose.pose.position.x, pose.pose.position.y, theta_path);
+      target_path.push_back(s_path);
+    }
+    Eigen::Vector2d u = _mpcControl(s, s_d, u_r, du_p_, target_path);
     double u_v = linearRegularization(base_odom, u[0]);
     double u_w = angularRegularization(base_odom, u[1]);
     du_p_ = Eigen::Vector2d(u_v - u_r[0], regularizeAngle(u_w - u_r[1]));
@@ -280,16 +298,16 @@ bool MPCController::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
  * @return u  control vector
  */
 Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_d, Eigen::Vector2d u_r,
-                                           Eigen::Vector2d du_p)
+                                           Eigen::Vector2d du_p, std::vector<Eigen::Vector3d> path)
 {
   int dim_u = 2;
   int dim_x = 3;
 
   // state vector (5 x 1)
   Eigen::VectorXd x = Eigen::VectorXd(dim_x + dim_u);
-  x.topLeftCorner(dim_x, 1) = s - s_d;
+  x.topLeftCorner(dim_x, 1) = s;
   x[2] = regularizeAngle(x[2]);
-  x.bottomLeftCorner(dim_u, 1) = du_p;
+  x.bottomLeftCorner(dim_u, 1) = u_r;
 
   // original state matrix
   Eigen::Matrix3d A_o = Eigen::Matrix3d::Identity();
@@ -301,8 +319,8 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
 
   // original control matrix
   Eigen::MatrixXd B_o = Eigen::MatrixXd::Zero(dim_x, dim_u);
-  B_o(0, 0) = cos(s_d[2]) * d_t_;
-  B_o(1, 0) = sin(s_d[2]) * d_t_;
+  B_o(0, 0) = cos(s[2]) * d_t_;
+  B_o(1, 0) = sin(s[2]) * d_t_;
   B_o(2, 1) = d_t_;
   // 応答遅れを考慮
   //B_o(2, 1) *= response_delay_factor_; 
@@ -351,6 +369,11 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
   // min 1/2 * x.T * P * x + q.T * x
   // s.t. l <= Ax <= u
   Eigen::VectorXd Yr = Eigen::VectorXd::Zero(dim_x * p_);                              // (3p x 1)
+  for (int i = 0; i < p_; i++){
+    Yr[ 3 * i ] = path[i][0];
+    Yr[ 3 * i + 1 ] = path[i][1];
+    Yr[ 3 * i + 2 ] = path[i][2];
+  }
   Eigen::MatrixXd Q = Eigen::kroneckerProduct(Eigen::MatrixXd::Identity(p_, p_), Q_);  // (3p x 3p)
   Eigen::MatrixXd R = Eigen::kroneckerProduct(Eigen::MatrixXd::Identity(m_, m_), R_);  // (2m x 2m)
   Eigen::MatrixXd P = S_u.transpose() * Q * S_u + R;                                   // (2m x 2m)
@@ -489,9 +512,9 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
 
       // 状態遷移計算
       current_state = current_state + B * Eigen::VectorXd::Map(&work->solution->x[i * 2], 2);
-      x_pre += (work->solution->x[i * 2] + du_p[0] + u_r[0]) * cos(th_pre) * d_t_;
-      y_pre += (work->solution->x[i * 2] + du_p[0] + u_r[0]) * sin(th_pre) * d_t_;
-      th_pre += (work->solution->x[i * 2 + 1] + du_p[1] + u_r[1]) * d_t_; 
+      x_pre += (work->solution->x[i * 2] /*+ du_p[0] + u_r[0]*/) * cos(th_pre) * d_t_;
+      y_pre += (work->solution->x[i * 2] /*+ du_p[0] + u_r[0]*/) * sin(th_pre) * d_t_;
+      th_pre += (work->solution->x[i * 2 + 1] /*+ du_p[1] + u_r[1]*/) * d_t_; 
       geometry_msgs::PoseStamped pose;
       pose.header.frame_id = base_frame_;
       pose.pose.position.x = x_pre;//current_state(0);  // x position
@@ -505,8 +528,8 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
   // Publish the predicted trajectory
   trajectory_pub_.publish(predicted_path);
 
-  Eigen::Vector2d u(work->solution->x[0] + du_p[0] + u_r[0], regularizeAngle(work->solution->x[1] + du_p[1] + u_r[1]));
-  //Eigen::Vector2d u(work->solution->x[0], work->solution->x[1]);
+  // Eigen::Vector2d u(work->solution->x[0] + du_p[0] + u_r[0], regularizeAngle(work->solution->x[1] + du_p[1] + u_r[1]));
+  Eigen::Vector2d u(work->solution->x[0], work->solution->x[1]);
 
   // double w_ref = 0.0;
   // int num_mean_w = work->data->n/2;
@@ -524,6 +547,47 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
 
   return u;
 }
+
+int MPCController::get_nearest_index(const std::vector<geometry_msgs::PoseStamped>& path, const geometry_msgs::PoseStamped& pose){
+  //for(int )
+  int index = -1;
+  double min_dist = std::numeric_limits<double>::infinity();
+  for(int i = 0; i < path.size(); i++){
+    double dist = std::hypot(pose.pose.position.x - path[i].pose.position.x, pose.pose.position.y - path[i].pose.position.y);
+    if(dist < min_dist){
+      min_dist = dist;
+      index = i;
+    }
+  }
+  return index;
+}
+
+bool MPCController::reap_path(std::vector<geometry_msgs::PoseStamped>& path, const int& start_index, const int& goal_index){
+  if(path.size() < goal_index || goal_index < start_index){
+    return false;
+  }
+  std::vector<geometry_msgs::PoseStamped> path_result = std::vector<geometry_msgs::PoseStamped>(path.begin() + start_index, path.begin() + goal_index + 1);
+  path = path_result;
+  return true;
+}
+
+bool MPCController::downsample_path(std::vector<geometry_msgs::PoseStamped>& path, const double& min_dist){
+  std::vector<geometry_msgs::PoseStamped> path_result;
+  if(path.size() < 1){
+    return false;
+  }
+  ROS_INFO_STREAM("min_dist: " << min_dist);
+  path_result.push_back(path[0]);
+  for(int i = 0; i < path.size(); i++){
+    double distance = std::hypot(path_result.back().pose.position.x - path[i].pose.position.x, path_result.back().pose.position.y - path[i].pose.position.y);
+    if(distance > min_dist){
+      path_result.push_back(path[i]);
+    }
+  }
+  path = path_result;
+  return true;
+}
+
 
 }  // namespace controller
 }  // namespace rmp

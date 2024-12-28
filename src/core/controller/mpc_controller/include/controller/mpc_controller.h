@@ -88,7 +88,11 @@ private:
    * @param du_p  previous control error
    * @return u  control vector
    */
-  Eigen::Vector2d _mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_d, Eigen::Vector2d u_r, Eigen::Vector2d du_p);
+  Eigen::Vector2d _mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_d, Eigen::Vector2d u_r, Eigen::Vector2d du_p, std::vector<Eigen::Vector3d> path);
+
+  int get_nearest_index(const std::vector<geometry_msgs::PoseStamped>& path, const geometry_msgs::PoseStamped& pose);
+  bool reap_path(std::vector<geometry_msgs::PoseStamped>& path, const int& start_index, const int& goal_index);
+  bool downsample_path(std::vector<geometry_msgs::PoseStamped>& path, const double& min_dist);
 
 private:
   bool initialized_;     // initialized flag
