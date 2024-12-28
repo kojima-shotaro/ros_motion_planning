@@ -123,8 +123,10 @@ void MPCController::initialize(std::string name, tf2_ros::Buffer* tf, costmap_2d
     d_t_ = 1 / controller_freqency;
 
     target_pt_pub_ = nh.advertise<geometry_msgs::PointStamped>("/target_point", 10);
+    target_trj_pub_ = nh.advertise<nav_msgs::Path>("/target_trajectory", 10);
     current_pose_pub_ = nh.advertise<geometry_msgs::PoseStamped>("/current_pose", 10);
     trajectory_pub_ = nh.advertise<nav_msgs::Path>("/predicted_trajectory", 10);
+
 
     ROS_INFO("MPC Controller initialized!");
   }
@@ -210,25 +212,24 @@ bool MPCController::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
   // transform global plan to robot frame
   //std::vector<geometry_msgs::PoseStamped> prune_plan = prune(robot_pose_map);
   std::vector<geometry_msgs::PoseStamped> prune_plan = global_plan_;
-  ROS_INFO_STREAM("aaaaa");
-  int index_current = get_nearest_index(prune_plan, robot_pose_map);
-  ROS_INFO_STREAM("a1");
   for(auto& pose : prune_plan){
     tf_->transform(pose,pose,map_frame_);
   }
   //calc target trajectory considering robot speed and distanece
+  double vt = std::hypot(base_odom.twist.twist.linear.x, base_odom.twist.twist.linear.y);    // calculate look-ahead distance
+  double wt = base_odom.twist.twist.angular.z;
+  double L = getLookAheadDistance(vt);
+  downsample_path(prune_plan, d_t_ * std::fabs(max_v_));
+  int index_current = get_nearest_index(prune_plan, robot_pose_map);
   int index_end = prune_plan.size();
   if(index_end > p_ + index_current){
     index_end = p_ + index_current;
   }
-  ROS_INFO_STREAM("bbbbb");
   reap_path(prune_plan, index_current, index_end);
-  ROS_INFO_STREAM("ccccc");
-  double vt = std::hypot(base_odom.twist.twist.linear.x, base_odom.twist.twist.linear.y);    // calculate look-ahead distance
-  double wt = base_odom.twist.twist.angular.z;
-  double L = getLookAheadDistance(vt);
-  downsample_path(prune_plan, d_t_ * std::min(std::fabs(vt),std::fabs(min_v_)));
-  ROS_INFO_STREAM("ddddd");
+  nav_msgs::Path target_path;
+  target_path.header = prune_plan[0].header;
+  target_path.poses = prune_plan;
+  target_trj_pub_.publish(target_path);
 
   // get the particular point on the path at the lookahead distance
   geometry_msgs::PointStamped lookahead_pt;
@@ -311,16 +312,16 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
 
   // original state matrix
   Eigen::Matrix3d A_o = Eigen::Matrix3d::Identity();
-  // A_o(0, 2) = -u_r[0] * sin(s_d[2]) * d_t_;
-  // A_o(1, 2) = u_r[0] * cos(s_d[2]) * d_t_;
+  //A_o(0, 2) = -u_r[0] * sin(path.back()[2]) * d_t_;
+  //A_o(1, 2) = u_r[0] * cos(path.back()[2]) * d_t_;
 
   // 慣性を考慮した項を追加
   //A_o(2, 2) -= inertia_coefficient_ * d_t_;  
 
   // original control matrix
   Eigen::MatrixXd B_o = Eigen::MatrixXd::Zero(dim_x, dim_u);
-  B_o(0, 0) = cos(s[2]) * d_t_;
-  B_o(1, 0) = sin(s[2]) * d_t_;
+  B_o(0, 0) = cos(path.back()[2]) * d_t_;
+  B_o(1, 0) = sin(path.back()[2]) * d_t_;
   B_o(2, 1) = d_t_;
   // 応答遅れを考慮
   //B_o(2, 1) *= response_delay_factor_; 
@@ -502,21 +503,21 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
   Eigen::VectorXd current_state = Eigen::VectorXd::Zero(s.size() + du_p.size());
   // current_state.head(s.size()) = s;           // 現在の位置と向き
   // current_state.tail(du_p.size()) = du_p;     // 前回の制御入力誤差
-  double x_pre = 0, y_pre = 0, th_pre=0;
+  double x_pre = s[0], y_pre = s[1], th_pre = s[2];
   //ROS_INFO_STREAM("solution length: " << work->data->n);
   for (int i = 0; i < (work->data->n / 2); i++) {
-      // ROS_INFO_STREAM("solution " << i << ": " << 
-      // (double)work->solution->x[i*2] + du_p[0] + u_r[0]
-      // << ", " << 
-      // (double)work->solution->x[i*2+1] + du_p[1] + u_r[1]);
+      ROS_INFO_STREAM("solution " << i << ": " << 
+      (double)work->solution->x[i*2] /*+ du_p[0] + u_r[0]*/
+      << ", " << 
+      (double)work->solution->x[i*2+1] /*+ du_p[1] + u_r[1]*/);
 
       // 状態遷移計算
       current_state = current_state + B * Eigen::VectorXd::Map(&work->solution->x[i * 2], 2);
-      x_pre += (work->solution->x[i * 2] /*+ du_p[0] + u_r[0]*/) * cos(th_pre) * d_t_;
-      y_pre += (work->solution->x[i * 2] /*+ du_p[0] + u_r[0]*/) * sin(th_pre) * d_t_;
-      th_pre += (work->solution->x[i * 2 + 1] /*+ du_p[1] + u_r[1]*/) * d_t_; 
+      x_pre += (work->solution->x[i * 2] + du_p[0] + u_r[0]) * cos(th_pre) * d_t_;
+      y_pre += (work->solution->x[i * 2] + du_p[0] + u_r[0]) * sin(th_pre) * d_t_;
+      th_pre += (work->solution->x[i * 2 + 1] + du_p[1] + u_r[1]) * d_t_; 
       geometry_msgs::PoseStamped pose;
-      pose.header.frame_id = base_frame_;
+      pose.header.frame_id = map_frame_;
       pose.pose.position.x = x_pre;//current_state(0);  // x position
       pose.pose.position.y = y_pre;//current_state(1);  // y position
       pose.pose.orientation = tf::createQuaternionMsgFromYaw(th_pre/*current_state(2)*/);  // orientation (theta)
@@ -525,7 +526,7 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
       predicted_path.poses.push_back(pose);
   }
 
-  // Publish the predicted trajectory
+  // Publish the predicted trajectory+ du_p[1] + u_r[1]
   trajectory_pub_.publish(predicted_path);
 
   // Eigen::Vector2d u(work->solution->x[0] + du_p[0] + u_r[0], regularizeAngle(work->solution->x[1] + du_p[1] + u_r[1]));
@@ -582,6 +583,7 @@ bool MPCController::downsample_path(std::vector<geometry_msgs::PoseStamped>& pat
     double distance = std::hypot(path_result.back().pose.position.x - path[i].pose.position.x, path_result.back().pose.position.y - path[i].pose.position.y);
     if(distance > min_dist){
       path_result.push_back(path[i]);
+      ROS_INFO_STREAM("pose " << i << ": " << path[i]);
     }
   }
   path = path_result;

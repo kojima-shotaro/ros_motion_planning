@@ -115,7 +115,7 @@ private:
   bool warm_start_, adaptive_rho_, scaled_termination_;
   double eps_abs_, eps_rel_;
 
-  ros::Publisher target_pt_pub_, current_pose_pub_, trajectory_pub_;
+  ros::Publisher target_pt_pub_, target_trj_pub_, current_pose_pub_, trajectory_pub_;
 
   // goal parameters
   double goal_x_, goal_y_, goal_theta_;
