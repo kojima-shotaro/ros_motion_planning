@@ -219,11 +219,12 @@ bool MPCController::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
   double vt = std::hypot(base_odom.twist.twist.linear.x, base_odom.twist.twist.linear.y);    // calculate look-ahead distance
   double wt = base_odom.twist.twist.angular.z;
   double L = getLookAheadDistance(vt);
-  downsample_path(prune_plan, d_t_ * std::fabs(max_v_));
+  downsample_path(prune_plan, d_t_ * std::min(std::max(std::fabs(min_v_), std::fabs(vt)), std::fabs(max_v_)));
+  // downsample_path(prune_plan, d_t_ * std::fabs(min_v_));
   int index_current = get_nearest_index(prune_plan, robot_pose_map);
-  int index_end = prune_plan.size();
-  if(index_end > p_ + index_current){
-    index_end = p_ + index_current;
+  int index_end = prune_plan.size() - 1;
+  if(index_end > p_ + index_current - 1){
+    index_end = p_ + index_current - 1;
   }
   reap_path(prune_plan, index_current, index_end);
   nav_msgs::Path target_path;
@@ -308,20 +309,20 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
   Eigen::VectorXd x = Eigen::VectorXd(dim_x + dim_u);
   x.topLeftCorner(dim_x, 1) = s;
   x[2] = regularizeAngle(x[2]);
-  x.bottomLeftCorner(dim_u, 1) = u_r;
+  x.bottomLeftCorner(dim_u, 1) = du_p;//u_r;
 
   // original state matrix
   Eigen::Matrix3d A_o = Eigen::Matrix3d::Identity();
-  //A_o(0, 2) = -u_r[0] * sin(path.back()[2]) * d_t_;
-  //A_o(1, 2) = u_r[0] * cos(path.back()[2]) * d_t_;
+  //A_o(0, 2) = -u_r[0] * sin(s[2]) * d_t_;
+  //A_o(1, 2) = u_r[0] * cos(s[2]) * d_t_;
 
   // 慣性を考慮した項を追加
   //A_o(2, 2) -= inertia_coefficient_ * d_t_;  
 
   // original control matrix
   Eigen::MatrixXd B_o = Eigen::MatrixXd::Zero(dim_x, dim_u);
-  B_o(0, 0) = cos(path.back()[2]) * d_t_;
-  B_o(1, 0) = sin(path.back()[2]) * d_t_;
+  B_o(0, 0) = cos(s[2]) * d_t_;
+  B_o(1, 0) = sin(s[2]) * d_t_;
   B_o(2, 1) = d_t_;
   // 応答遅れを考慮
   //B_o(2, 1) *= response_delay_factor_; 
@@ -507,9 +508,9 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
   //ROS_INFO_STREAM("solution length: " << work->data->n);
   for (int i = 0; i < (work->data->n / 2); i++) {
       ROS_INFO_STREAM("solution " << i << ": " << 
-      (double)work->solution->x[i*2] /*+ du_p[0] + u_r[0]*/
+      (double)work->solution->x[i*2] + du_p[0] + u_r[0]
       << ", " << 
-      (double)work->solution->x[i*2+1] /*+ du_p[1] + u_r[1]*/);
+      (double)work->solution->x[i*2+1] + du_p[1] + u_r[1]);
 
       // 状態遷移計算
       current_state = current_state + B * Eigen::VectorXd::Map(&work->solution->x[i * 2], 2);
@@ -529,8 +530,8 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
   // Publish the predicted trajectory+ du_p[1] + u_r[1]
   trajectory_pub_.publish(predicted_path);
 
-  // Eigen::Vector2d u(work->solution->x[0] + du_p[0] + u_r[0], regularizeAngle(work->solution->x[1] + du_p[1] + u_r[1]));
-  Eigen::Vector2d u(work->solution->x[0], work->solution->x[1]);
+  Eigen::Vector2d u(work->solution->x[0] + du_p[0] + u_r[0], regularizeAngle(work->solution->x[1] + du_p[1] + u_r[1]));
+  // Eigen::Vector2d u(work->solution->x[0], work->solution->x[1]);
 
   // double w_ref = 0.0;
   // int num_mean_w = work->data->n/2;
