@@ -264,9 +264,12 @@ bool MPCController::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
     Eigen::Vector3d s_d(lookahead_pt.point.x, lookahead_pt.point.y, theta_trj);                // desired state
     Eigen::Vector2d u_r(vt, regularizeAngle(vt * kappa));                                      // refered input
     std::vector<Eigen::Vector3d> target_path;
-    for(auto pose: prune_plan){
-      double theta_path = tf2::getYaw(pose.pose.orientation);
-      Eigen::Vector3d s_path(pose.pose.position.x, pose.pose.position.y, theta_path);
+    for(int i = 0; i < prune_plan.size(); i++){
+      int index = (i < prune_plan.size()) ? index = i : index = i-1;
+      double dx = prune_plan[index+1].pose.position.x-prune_plan[index].pose.position.x;
+      double dy = prune_plan[index+1].pose.position.y-prune_plan[index].pose.position.y;
+      double theta_path = std::atan2(dy, dx);
+      Eigen::Vector3d s_path(prune_plan[i].pose.position.x, prune_plan[i].pose.position.y, theta_path);
       target_path.push_back(s_path);
     }
     Eigen::Vector2d u = _mpcControl(s, s_d, u_r, du_p_, target_path);
