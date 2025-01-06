@@ -118,9 +118,8 @@ void MPCController::initialize(std::string name, tf2_ros::Buffer* tf, costmap_2d
     for (size_t i = 0; i < diag_vec.size(); ++i)
       R_(i, i) = diag_vec[i];
 
-    double controller_freqency;
-    nh.param("/move_base/controller_frequency", controller_freqency, 10.0);
-    d_t_ = 1 / controller_freqency;
+    nh.param("dt", d_t_, 0.1);
+    nh.param("weight_final_state", w_final_, 1.0);
 
     target_pt_pub_ = nh.advertise<geometry_msgs::PointStamped>("/target_point", 10);
     target_trj_pub_ = nh.advertise<nav_msgs::Path>("/target_trajectory", 10);
@@ -213,6 +212,7 @@ bool MPCController::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
   //std::vector<geometry_msgs::PoseStamped> prune_plan = prune(robot_pose_map);
   std::vector<geometry_msgs::PoseStamped> prune_plan = global_plan_;
   for(auto& pose : prune_plan){
+    pose.header.stamp = ros::Time(0);
     tf_->transform(pose,pose,map_frame_);
   }
   //calc target trajectory considering robot speed and distanece
@@ -321,9 +321,9 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
 
   // original control matrix
   Eigen::MatrixXd B_o = Eigen::MatrixXd::Zero(dim_x, dim_u);
-  B_o(0, 0) = cos(s[2]) * d_t_;
-  B_o(1, 0) = sin(s[2]) * d_t_;
-  B_o(2, 1) = d_t_;
+  B_o(0, 0) = cos(s[2]) * d_t_ * (1.0 - (delay_time_v_ > 0.0 ? exp(-d_t_ / delay_time_v_) : 0.0));
+  B_o(1, 0) = sin(s[2]) * d_t_ * (1.0 - (delay_time_v_ > 0.0 ? exp(-d_t_ / delay_time_v_) : 0.0));
+  B_o(2, 1) = d_t_ * (1.0 - (delay_time_w_ > 0.0 ? exp(-d_t_ / delay_time_w_) : 0.0));
   // 応答遅れを考慮
   //B_o(2, 1) *= response_delay_factor_; 
 
@@ -333,8 +333,8 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
   A.topRightCorner(dim_x, dim_u) = B_o;
   A.bottomLeftCorner(dim_u, dim_x) = Eigen::MatrixXd::Zero(dim_u, dim_x);
   A.bottomRightCorner(dim_u, dim_u) = Eigen::Matrix2d::Identity();
-  //A(3,3) = 1.0 - d_t_ / delay_time_v_;
-  //A(4,4) = 1.0 - d_t_ / delay_time_w_;
+  //A(3,3) = 1.0 - exp(-d_t_ / delay_time_v_);
+  //A(4,4) = 1.0 - exp(-d_t_ / delay_time_w_);
 
   // control matrix (5 x 2)
   Eigen::MatrixXd B = Eigen::MatrixXd::Zero(dim_x + dim_u, dim_u);
@@ -377,6 +377,9 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
     Yr[ 3 * i + 2 ] = path[i][2];
   }
   Eigen::MatrixXd Q = Eigen::kroneckerProduct(Eigen::MatrixXd::Identity(p_, p_), Q_);  // (3p x 3p)
+  Eigen::Matrix3d Q_end = Q_;
+  Q_end *= w_final_;
+  Q.bottomRightCorner(dim_x, dim_x) = Q_end;
   Eigen::MatrixXd R = Eigen::kroneckerProduct(Eigen::MatrixXd::Identity(m_, m_), R_);  // (2m x 2m)
   Eigen::MatrixXd P = S_u.transpose() * Q * S_u + R;                                   // (2m x 2m)
   Eigen::VectorXd q = S_u.transpose() * Q * (S_x * x - Yr);                            // (2m x 1)
@@ -552,10 +555,15 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
 
 int MPCController::get_nearest_index(const std::vector<geometry_msgs::PoseStamped>& path, const geometry_msgs::PoseStamped& pose){
   //for(int )
+  if(path.size() == 0){
+    return -1;
+  }
   int index = -1;
+  geometry_msgs::PoseStamped base_pose;
+  tf_->transform(pose,base_pose,path[0].header.frame_id);
   double min_dist = std::numeric_limits<double>::infinity();
   for(int i = 0; i < path.size(); i++){
-    double dist = std::hypot(pose.pose.position.x - path[i].pose.position.x, pose.pose.position.y - path[i].pose.position.y);
+    double dist = std::hypot(base_pose.pose.position.x - path[i].pose.position.x, base_pose.pose.position.y - path[i].pose.position.y);
     if(dist < min_dist){
       min_dist = dist;
       index = i;
@@ -584,7 +592,7 @@ bool MPCController::downsample_path(std::vector<geometry_msgs::PoseStamped>& pat
     double distance = std::hypot(path_result.back().pose.position.x - path[i].pose.position.x, path_result.back().pose.position.y - path[i].pose.position.y);
     if(distance > min_dist){
       path_result.push_back(path[i]);
-      ROS_INFO_STREAM("pose " << i << ": " << path[i]);
+      // ROS_INFO_STREAM("pose " << i << ": " << path[i]);
     }
   }
   path = path_result;

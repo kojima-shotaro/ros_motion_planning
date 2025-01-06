@@ -100,6 +100,7 @@ private:
   tf2_ros::Buffer* tf_;  // transform buffer
 
   double d_t_;            // control time interval
+  double w_final_;
   Eigen::Matrix3d Q_;     // state error matrix
   Eigen::Matrix2d R_;     // control error matrix
   int p_;                 // predicting time domain
