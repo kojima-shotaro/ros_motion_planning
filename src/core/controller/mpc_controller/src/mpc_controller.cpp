@@ -222,6 +222,12 @@ bool MPCController::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
   downsample_path(prune_plan, d_t_ * std::min(std::max(std::fabs(min_v_), std::fabs(vt)), std::fabs(max_v_)));
   // downsample_path(prune_plan, d_t_ * std::fabs(min_v_));
   int index_current = get_nearest_index(prune_plan, robot_pose_map);
+  if (index_current == prune_plan.size() - 1){
+    cmd_vel.linear.x = 0.0;
+    cmd_vel.angular.z = 0.0;
+    goal_reached_ = true;
+    return true;
+  }
   int index_end = prune_plan.size() - 1;
   if(index_end > p_ + index_current - 1){
     index_end = p_ + index_current - 1;
@@ -351,15 +357,19 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
   C.topLeftCorner(dim_x, dim_x) = Eigen::Matrix3d::Identity();
   C.topRightCorner(dim_x, dim_u) = Eigen::MatrixXd::Zero(dim_x, dim_u);
 
+
+  //
+  int p = (p_ >= path.size()) ? path.size() : p_;
+  int m = (m_ >= p_) ? p_ : m_;
   // mpc state matrix(3p x 5)
   Eigen::MatrixPower<Eigen::MatrixXd> A_pow(A);
-  Eigen::MatrixXd S_x = Eigen::MatrixXd::Zero(dim_x * p_, dim_x + dim_u);
-  for (int i = 0; i < p_; i++)
+  Eigen::MatrixXd S_x = Eigen::MatrixXd::Zero(dim_x * p, dim_x + dim_u);
+  for (int i = 0; i < p; i++)
     S_x.middleRows(dim_x * i, dim_x) = C * A_pow(i + 1);
 
   // mpc control matrix(3p x 2m)
-  Eigen::MatrixXd S_u = Eigen::MatrixXd::Zero(dim_x * p_, dim_u * m_);
-  for (int i = 0; i < p_; i++)
+  Eigen::MatrixXd S_u = Eigen::MatrixXd::Zero(dim_x * p, dim_u * m_);
+  for (int i = 0; i < p; i++)
   {
     for (int j = 0; j < m_; j++)
     {
@@ -373,17 +383,17 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
   // optimization
   // min 1/2 * x.T * P * x + q.T * x
   // s.t. l <= Ax <= u
-  Eigen::VectorXd Yr = Eigen::VectorXd::Zero(dim_x * p_);                              // (3p x 1)
-  for (int i = 0; i < p_; i++){
+  Eigen::VectorXd Yr = Eigen::VectorXd::Zero(dim_x * p);                              // (3p x 1)
+  for (int i = 0; i < path.size(); i++){
     Yr[ 3 * i ] = path[i][0];
     Yr[ 3 * i + 1 ] = path[i][1];
     Yr[ 3 * i + 2 ] = path[i][2];
   }
-  Eigen::MatrixXd Q = Eigen::kroneckerProduct(Eigen::MatrixXd::Identity(p_, p_), Q_);  // (3p x 3p)
+  Eigen::MatrixXd Q = Eigen::kroneckerProduct(Eigen::MatrixXd::Identity(p, p), Q_);  // (3p x 3p)
   Eigen::Matrix3d Q_end = Q_;
   Q_end *= w_final_;
   Q.bottomRightCorner(dim_x, dim_x) = Q_end;
-  Eigen::MatrixXd R = Eigen::kroneckerProduct(Eigen::MatrixXd::Identity(m_, m_), R_);  // (2m x 2m)
+  Eigen::MatrixXd R = Eigen::kroneckerProduct(Eigen::MatrixXd::Identity(m, m), R_);  // (2m x 2m)
   Eigen::MatrixXd P = S_u.transpose() * Q * S_u + R;                                   // (2m x 2m)
   Eigen::VectorXd q = S_u.transpose() * Q * (S_x * x - Yr);                            // (2m x 1)
 
@@ -393,27 +403,27 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
   Eigen::Vector2d u_k_1(du_p[0], du_p[1]);
   Eigen::Vector2d du_min(-max_v_inc_, -max_w_inc_);
   Eigen::Vector2d du_max(max_v_inc_, max_w_inc_);
-  Eigen::VectorXd U_min = Eigen::kroneckerProduct(Eigen::VectorXd::Ones(m_), u_min);    // (2m x 1)
-  Eigen::VectorXd U_max = Eigen::kroneckerProduct(Eigen::VectorXd::Ones(m_), u_max);    // (2m x 1)
-  Eigen::VectorXd U_r = Eigen::kroneckerProduct(Eigen::VectorXd::Ones(m_), u_r);        // (2m x 1)
-  Eigen::VectorXd U_k_1 = Eigen::kroneckerProduct(Eigen::VectorXd::Ones(m_), u_k_1);    // (2m x 1)
-  Eigen::VectorXd dU_min = Eigen::kroneckerProduct(Eigen::VectorXd::Ones(m_), du_min);  // (2m x 1)
-  Eigen::VectorXd dU_max = Eigen::kroneckerProduct(Eigen::VectorXd::Ones(m_), du_max);  // (2m x 1)
+  Eigen::VectorXd U_min = Eigen::kroneckerProduct(Eigen::VectorXd::Ones(m), u_min);    // (2m x 1)
+  Eigen::VectorXd U_max = Eigen::kroneckerProduct(Eigen::VectorXd::Ones(m), u_max);    // (2m x 1)
+  Eigen::VectorXd U_r = Eigen::kroneckerProduct(Eigen::VectorXd::Ones(m), u_r);        // (2m x 1)
+  Eigen::VectorXd U_k_1 = Eigen::kroneckerProduct(Eigen::VectorXd::Ones(m), u_k_1);    // (2m x 1)
+  Eigen::VectorXd dU_min = Eigen::kroneckerProduct(Eigen::VectorXd::Ones(m), du_min);  // (2m x 1)
+  Eigen::VectorXd dU_max = Eigen::kroneckerProduct(Eigen::VectorXd::Ones(m), du_max);  // (2m x 1)
 
   // constriants
-  Eigen::VectorXd lower = Eigen::VectorXd::Zero(2 * dim_u * m_);  // (4m x 1)
-  Eigen::VectorXd upper = Eigen::VectorXd::Zero(2 * dim_u * m_);  // (4m x 1)
-  lower.topRows(dim_u * m_) = U_min - U_k_1 - U_r;
-  lower.bottomRows(dim_u * m_) = dU_min;
-  upper.topRows(dim_u * m_) = U_max - U_k_1 - U_r;
-  upper.bottomRows(dim_u * m_) = dU_max;
+  Eigen::VectorXd lower = Eigen::VectorXd::Zero(2 * dim_u * m);  // (4m x 1)
+  Eigen::VectorXd upper = Eigen::VectorXd::Zero(2 * dim_u * m);  // (4m x 1)
+  lower.topRows(dim_u * m) = U_min - U_k_1 - U_r;
+  lower.bottomRows(dim_u * m) = dU_min;
+  upper.topRows(dim_u * m) = U_max - U_k_1 - U_r;
+  upper.bottomRows(dim_u * m) = dU_max;
 
   // Calculate kernel
   std::vector<c_float> P_data;
   std::vector<c_int> P_indices;
   std::vector<c_int> P_indptr;
   int ind_P = 0;
-  for (int col = 0; col < dim_u * m_; ++col)
+  for (int col = 0; col < dim_u * m; ++col)
   {
     P_indptr.push_back(ind_P);
     for (int row = 0; row <= col; ++row)
@@ -432,18 +442,18 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
   std::vector<c_int> A_indptr;
   int ind_A = 0;
   A_indptr.push_back(ind_A);
-  for (int j = 0; j < m_; ++j)
+  for (int j = 0; j < m; ++j)
   {
     for (int n = 0; n < dim_u; ++n)
     {
-      for (int row = dim_u * j + n; row < dim_u * m_; row += dim_u)
+      for (int row = dim_u * j + n; row < dim_u * m; row += dim_u)
       {
         A_data.push_back(1.0);
         A_indices.push_back(row);
         ++ind_A;
       }
       A_data.push_back(1.0);
-      A_indices.push_back(dim_u * m_ + dim_u * j + n);
+      A_indices.push_back(dim_u * m + dim_u * j + n);
       ++ind_A;
       A_indptr.push_back(ind_A);
     }
@@ -451,7 +461,7 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
 
   // Calculate offset
   std::vector<c_float> q_data;
-  for (int row = 0; row < dim_u * m_; ++row)
+  for (int row = 0; row < dim_u * m; ++row)
   {
     q_data.push_back(q(row, 0));
   }
@@ -459,7 +469,7 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
   // Calculate constraints
   std::vector<c_float> lower_bounds;
   std::vector<c_float> upper_bounds;
-  for (int row = 0; row < 2 * dim_u * m_; row++)
+  for (int row = 0; row < 2 * dim_u * m; row++)
   {
     lower_bounds.push_back(lower(row, 0));
     upper_bounds.push_back(upper(row, 0));
@@ -478,8 +488,8 @@ Eigen::Vector2d MPCController::_mpcControl(Eigen::Vector3d s, Eigen::Vector3d s_
   settings->eps_abs = eps_abs_; 
   settings->eps_rel = eps_rel_;
 
-  data->n = dim_u * m_;
-  data->m = 2 * dim_u * m_;
+  data->n = dim_u * m;
+  data->m = 2 * dim_u * m;
   data->P = csc_matrix(data->n, data->n, P_data.size(), P_data.data(), P_indices.data(), P_indptr.data());
   data->q = q.data();
   data->A = csc_matrix(data->m, data->n, A_data.size(), A_data.data(), A_indices.data(), A_indptr.data());
@@ -576,10 +586,12 @@ int MPCController::get_nearest_index(const std::vector<geometry_msgs::PoseStampe
 }
 
 bool MPCController::reap_path(std::vector<geometry_msgs::PoseStamped>& path, const int& start_index, const int& goal_index){
-  if(path.size() < goal_index || goal_index < start_index){
-    return false;
+  std::vector<geometry_msgs::PoseStamped> path_result;
+  if(path.size() < goal_index){
+    path_result = std::vector<geometry_msgs::PoseStamped>(path.begin() + start_index, path.end()) ;
+  }else{
+    path_result = std::vector<geometry_msgs::PoseStamped>(path.begin() + start_index, path.begin() + goal_index);
   }
-  std::vector<geometry_msgs::PoseStamped> path_result = std::vector<geometry_msgs::PoseStamped>(path.begin() + start_index, path.begin() + goal_index + 1);
   path = path_result;
   return true;
 }
